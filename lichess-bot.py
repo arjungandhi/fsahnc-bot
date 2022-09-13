@@ -5,7 +5,7 @@ import chess.syzygy
 import chess.gaviota
 from chess.variant import find_variant
 import chess.polyglot
-import engine_wrapper
+import engines.engine_wrapper as engine_wrapper
 import model
 import matchmaking
 import json
@@ -24,7 +24,12 @@ import copy
 from config import load_config
 from conversation import Conversation, ChatLine
 from timer import Timer
-from requests.exceptions import ChunkedEncodingError, ConnectionError, HTTPError, ReadTimeout
+from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    HTTPError,
+    ReadTimeout,
+)
 from rich.logging import RichHandler
 from collections import defaultdict, Counter
 from http.client import RemoteDisconnected
@@ -93,9 +98,7 @@ def logging_configurer(level, filename):
         file_handler.setFormatter(file_formatter)
         all_handlers.append(file_handler)
 
-    logging.basicConfig(level=level,
-                        handlers=all_handlers,
-                        force=True)
+    logging.basicConfig(level=level, handlers=all_handlers, force=True)
 
 
 def logging_listener_proc(queue, configurer, level, log_filename):
@@ -126,36 +129,40 @@ def start(li, user_profile, config, logging_level, log_filename, one_game=False)
     manager = multiprocessing.Manager()
     challenge_queue = manager.list()
     control_queue = manager.Queue()
-    control_stream = multiprocessing.Process(target=watch_control_stream, args=[control_queue, li])
+    control_stream = multiprocessing.Process(
+        target=watch_control_stream, args=[control_queue, li]
+    )
     control_stream.start()
     correspondence_cfg = config.get("correspondence") or {}
     correspondence_checkin_period = correspondence_cfg.get("checkin_period", 600)
-    correspondence_pinger = multiprocessing.Process(target=do_correspondence_ping,
-                                                    args=[control_queue,
-                                                          correspondence_checkin_period])
+    correspondence_pinger = multiprocessing.Process(
+        target=do_correspondence_ping,
+        args=[control_queue, correspondence_checkin_period],
+    )
     correspondence_pinger.start()
     correspondence_queue = manager.Queue()
     correspondence_queue.put("")
 
     logging_queue = manager.Queue()
-    logging_listener = multiprocessing.Process(target=logging_listener_proc,
-                                               args=(logging_queue,
-                                                     logging_configurer,
-                                                     logging_level,
-                                                     log_filename))
+    logging_listener = multiprocessing.Process(
+        target=logging_listener_proc,
+        args=(logging_queue, logging_configurer, logging_level, log_filename),
+    )
     logging_listener.start()
 
     try:
-        lichess_bot_main(li,
-                         user_profile,
-                         config,
-                         logging_level,
-                         log_filename,
-                         challenge_queue,
-                         control_queue,
-                         correspondence_queue,
-                         logging_queue,
-                         one_game)
+        lichess_bot_main(
+            li,
+            user_profile,
+            config,
+            logging_level,
+            log_filename,
+            challenge_queue,
+            control_queue,
+            correspondence_queue,
+            logging_queue,
+            one_game,
+        )
     finally:
         control_stream.terminate()
         control_stream.join()
@@ -165,44 +172,52 @@ def start(li, user_profile, config, logging_level, log_filename, one_game=False)
         logging_listener.join()
 
 
-def lichess_bot_main(li,
-                     user_profile,
-                     config,
-                     logging_level,
-                     log_filename,
-                     challenge_queue,
-                     control_queue,
-                     correspondence_queue,
-                     logging_queue,
-                     one_game):
+def lichess_bot_main(
+    li,
+    user_profile,
+    config,
+    logging_level,
+    log_filename,
+    challenge_queue,
+    control_queue,
+    correspondence_queue,
+    logging_queue,
+    one_game,
+):
     busy_processes = 0
     queued_processes = 0
 
     def log_proc_count(change, queued, used):
         symbol = "+++" if change == "Freed" else "---"
-        logger.info(f"{symbol} Process {change}. Total Queued: {queued}. Total Used: {used}")
+        logger.info(
+            f"{symbol} Process {change}. Total Queued: {queued}. Total Used: {used}"
+        )
 
     challenge_config = config["challenge"]
     max_games = challenge_config.get("concurrency", 1)
 
     wait_for_correspondence_ping = False
-    startup_correspondence_games = [game["gameId"]
-                                    for game in li.get_ongoing_games()
-                                    if game["perf"] == "correspondence"]
+    startup_correspondence_games = [
+        game["gameId"]
+        for game in li.get_ongoing_games()
+        if game["perf"] == "correspondence"
+    ]
 
     last_check_online_time = Timer(60 * 60)  # one hour interval
     matchmaker = matchmaking.Matchmaking(li, config, user_profile)
 
-    play_game_args = [li,
-                      None,  # will hold the game id
-                      control_queue,
-                      user_profile,
-                      config,
-                      challenge_queue,
-                      correspondence_queue,
-                      logging_queue,
-                      game_logging_configurer,
-                      logging_level]
+    play_game_args = [
+        li,
+        None,  # will hold the game id
+        control_queue,
+        user_profile,
+        config,
+        challenge_queue,
+        correspondence_queue,
+        logging_queue,
+        game_logging_configurer,
+        logging_level,
+    ]
 
     with multiprocessing.pool.Pool(max_games + 1) as pool:
         while not terminated:
@@ -217,8 +232,10 @@ def lichess_bot_main(li,
                 logger.warning("Unable to handle response from lichess.org:")
                 logger.warning(event)
                 if event.get("error") == "Missing scope":
-                    logger.warning('Please check that the API access token for your bot has the scope "Play games '
-                                   'with the bot API".')
+                    logger.warning(
+                        'Please check that the API access token for your bot has the scope "Play games '
+                        'with the bot API".'
+                    )
                 continue
 
             if event["type"] == "terminated":
@@ -259,13 +276,16 @@ def lichess_bot_main(li,
                     busy_processes += 1
                     log_proc_count("Used", queued_processes, busy_processes)
                     play_game_args[1] = game_id
-                    pool.apply_async(play_game,
-                                     play_game_args,
-                                     error_callback=game_error_handler)
+                    pool.apply_async(
+                        play_game, play_game_args, error_callback=game_error_handler
+                    )
 
             is_correspondence_ping = event["type"] == "correspondence_ping"
             is_local_game_done = event["type"] == "local_game_done"
-            if (is_correspondence_ping or (is_local_game_done and not wait_for_correspondence_ping)) and not challenge_queue:
+            if (
+                is_correspondence_ping
+                or (is_local_game_done and not wait_for_correspondence_ping)
+            ) and not challenge_queue:
                 if is_correspondence_ping and wait_for_correspondence_ping:
                     correspondence_queue.put("")
 
@@ -284,9 +304,9 @@ def lichess_bot_main(li,
                         busy_processes += 1
                         log_proc_count("Used", queued_processes, busy_processes)
                         play_game_args[1] = game_id
-                        pool.apply_async(play_game,
-                                         play_game_args,
-                                         error_callback=game_error_handler)
+                        pool.apply_async(
+                            play_game, play_game_args, error_callback=game_error_handler
+                        )
 
             # Keep processing the queue until empty or max_games is reached.
             while (queued_processes + busy_processes) < max_games and challenge_queue:
@@ -299,13 +319,18 @@ def lichess_bot_main(li,
                     li.accept_challenge(chlng.id)
                     log_proc_count("Queued", queued_processes, busy_processes)
                 except (HTTPError, ReadTimeout) as exception:
-                    if isinstance(exception, HTTPError) and exception.response.status_code == 404:
+                    if (
+                        isinstance(exception, HTTPError)
+                        and exception.response.status_code == 404
+                    ):
                         logger.info(f"Skip missing {chlng}")
                     queued_processes -= 1
 
-            if (queued_processes + busy_processes < 1
-                    and not challenge_queue
-                    and matchmaker.should_create_challenge()):
+            if (
+                queued_processes + busy_processes < 1
+                and not challenge_queue
+                and matchmaker.should_create_challenge()
+            ):
                 logger.info("Challenging a random bot")
                 matchmaker.challenge()
 
@@ -321,16 +346,18 @@ def lichess_bot_main(li,
 
 
 @backoff.on_exception(backoff.expo, BaseException, max_time=600, giveup=is_final)
-def play_game(li,
-              game_id,
-              control_queue,
-              user_profile,
-              config,
-              challenge_queue,
-              correspondence_queue,
-              logging_queue,
-              game_logging_configurer,
-              logging_level):
+def play_game(
+    li,
+    game_id,
+    control_queue,
+    user_profile,
+    config,
+    challenge_queue,
+    correspondence_queue,
+    logging_queue,
+    game_logging_configurer,
+    logging_level,
+):
 
     game_logging_configurer(logging_queue, logging_level)
     logger = logging.getLogger(__name__)
@@ -359,7 +386,7 @@ def play_game(li,
     ponder_cfg = correspondence_cfg if is_correspondence else engine_cfg
     can_ponder = ponder_cfg.get("uci_ponder", False) or ponder_cfg.get("ponder", False)
     move_overhead = config.get("move_overhead", 1000)
-    delay_seconds = config.get("rate_limiting_delay", 0)/1000
+    delay_seconds = config.get("rate_limiting_delay", 0) / 1000
     polyglot_cfg = engine_cfg.get("polyglot", {})
     online_moves_cfg = engine_cfg.get("online_moves", {})
     draw_or_resign_cfg = engine_cfg.get("draw_or_resign") or {}
@@ -370,6 +397,7 @@ def play_game(li,
 
     def get_greeting(greeting):
         return str(greeting_cfg.get(greeting) or "").format_map(keyword_map)
+
     hello = get_greeting("hello")
     goodbye = get_greeting("goodbye")
     hello_spectators = get_greeting("hello_spectators")
@@ -410,38 +438,38 @@ def play_game(li,
                     best_move = get_book_move(board, polyglot_cfg)
 
                     if best_move.move is None:
-                        best_move = get_egtb_move(board,
-                                                  lichess_bot_tbs,
-                                                  draw_or_resign_cfg)
+                        best_move = get_egtb_move(
+                            board, lichess_bot_tbs, draw_or_resign_cfg
+                        )
 
                     if best_move.move is None:
-                        best_move = get_online_move(li,
-                                                    board,
-                                                    game,
-                                                    online_moves_cfg,
-                                                    draw_or_resign_cfg)
+                        best_move = get_online_move(
+                            li, board, game, online_moves_cfg, draw_or_resign_cfg
+                        )
 
                     if best_move.move is None:
                         draw_offered = check_for_draw_offer(game)
 
                         if len(board.move_stack) < 2:
-                            best_move = choose_first_move(engine,
-                                                          board,
-                                                          draw_offered)
+                            best_move = choose_first_move(engine, board, draw_offered)
                         elif is_correspondence:
-                            best_move = choose_move_time(engine,
-                                                         board,
-                                                         correspondence_move_time,
-                                                         can_ponder,
-                                                         draw_offered)
+                            best_move = choose_move_time(
+                                engine,
+                                board,
+                                correspondence_move_time,
+                                can_ponder,
+                                draw_offered,
+                            )
                         else:
-                            best_move = choose_move(engine,
-                                                    board,
-                                                    game,
-                                                    can_ponder,
-                                                    draw_offered,
-                                                    start_time,
-                                                    move_overhead)
+                            best_move = choose_move(
+                                engine,
+                                board,
+                                game,
+                                can_ponder,
+                                draw_offered,
+                                start_time,
+                                move_overhead,
+                            )
                     else:
                         engine.add_null_comment()
                     move_attempted = True
@@ -461,9 +489,11 @@ def play_game(li,
                 game.ping(abort_time, terminate_time, disconnect_time)
                 prior_game = copy.deepcopy(game)
             elif u_type == "ping":
-                if (is_correspondence
-                        and not is_engine_move(game, prior_game, board)
-                        and game.should_disconnect_now()):
+                if (
+                    is_correspondence
+                    and not is_engine_move(game, prior_game, board)
+                    and game.should_disconnect_now()
+                ):
                     break
                 elif game.should_abort_now():
                     logger.info(f"Aborting {game.url()} by lack of activity")
@@ -474,10 +504,18 @@ def play_game(li,
                     if game.is_abortable():
                         li.abort(game.id)
                     break
-        except (HTTPError, ReadTimeout, RemoteDisconnected, ChunkedEncodingError, ConnectionError):
+        except (
+            HTTPError,
+            ReadTimeout,
+            RemoteDisconnected,
+            ChunkedEncodingError,
+            ConnectionError,
+        ):
             if move_attempted:
                 continue
-            if game.id not in (ongoing_game["gameId"] for ongoing_game in li.get_ongoing_games()):
+            if game.id not in (
+                ongoing_game["gameId"] for ongoing_game in li.get_ongoing_games()
+            ):
                 break
         except StopIteration:
             break
@@ -558,13 +596,9 @@ def get_chessdb_move(li, board, game, chessdb_cfg):
     move = None
     site = "https://www.chessdb.cn/cdb.php"
     quality = chessdb_cfg.get("move_quality", "good")
-    action = {"best": "querypv",
-              "good": "querybest",
-              "all": "query"}
+    action = {"best": "querypv", "good": "querybest", "all": "query"}
     try:
-        params = {"action": action[quality],
-                  "board": board.fen(),
-                  "json": 1}
+        params = {"action": action[quality], "board": board.fen(), "json": 1}
         data = li.online_book_get(site, params=params)
         if data["status"] == "ok":
             if quality == "best":
@@ -572,7 +606,9 @@ def get_chessdb_move(li, board, game, chessdb_cfg):
                 if depth >= chessdb_cfg.get("min_depth", 20):
                     score = data["score"]
                     move = data["pv"][0]
-                    logger.info(f"Got move {move} from chessdb.cn (depth: {depth}, score: {score})")
+                    logger.info(
+                        f"Got move {move} from chessdb.cn (depth: {depth}, score: {score})"
+                    )
             else:
                 move = data["move"]
                 logger.info(f"Got move {move} from chessdb.cn")
@@ -601,10 +637,10 @@ def get_lichess_cloud_move(li, board, game, lichess_cloud_cfg):
     variant = "standard" if board.uci_variant == "chess" else board.uci_variant
 
     try:
-        data = li.online_book_get("https://lichess.org/api/cloud-eval",
-                                  params={"fen": board.fen(),
-                                          "multiPv": multipv,
-                                          "variant": variant})
+        data = li.online_book_get(
+            "https://lichess.org/api/cloud-eval",
+            params={"fen": board.fen(), "multiPv": multipv, "variant": variant},
+        )
         if "error" not in data:
             depth = data["depth"]
             knodes = data["knodes"]
@@ -618,13 +654,23 @@ def get_lichess_cloud_move(li, board, game, lichess_cloud_cfg):
                     pvs = data["pvs"]
                     max_difference = lichess_cloud_cfg.get("max_score_difference", 50)
                     if wb == "w":
-                        pvs = list(filter(lambda pv: pv["cp"] >= best_eval - max_difference, pvs))
+                        pvs = list(
+                            filter(
+                                lambda pv: pv["cp"] >= best_eval - max_difference, pvs
+                            )
+                        )
                     else:
-                        pvs = list(filter(lambda pv: pv["cp"] <= best_eval + max_difference, pvs))
+                        pvs = list(
+                            filter(
+                                lambda pv: pv["cp"] <= best_eval + max_difference, pvs
+                            )
+                        )
                     pv = random.choice(pvs)
                 move = pv["moves"].split()[0]
                 score = pv["cp"] if wb == "w" else -pv["cp"]
-                logger.info(f"Got move {move} from lichess cloud analysis (depth: {depth}, score: {score}, knodes: {knodes})")
+                logger.info(
+                    f"Got move {move} from lichess cloud analysis (depth: {depth}, score: {score}, knodes: {knodes})"
+                )
     except Exception:
         pass
 
@@ -637,14 +683,16 @@ def get_online_egtb_move(li, board, game, online_egtb_cfg):
     pieces = chess.popcount(board.occupied)
     source = online_egtb_cfg.get("source", "lichess")
     minimum_time = online_egtb_cfg.get("min_time", 20) * 1000
-    if (not use_online_egtb
-            or game.state[f"{wb}time"] < minimum_time
-            or board.uci_variant not in ["chess", "antichess", "atomic"]
-            and source == "lichess"
-            or board.uci_variant != "chess"
-            and source == "chessdb"
-            or pieces > online_egtb_cfg.get("max_pieces", 7)
-            or board.castling_rights):
+    if (
+        not use_online_egtb
+        or game.state[f"{wb}time"] < minimum_time
+        or board.uci_variant not in ["chess", "antichess", "atomic"]
+        and source == "lichess"
+        or board.uci_variant != "chess"
+        and source == "chessdb"
+        or pieces > online_egtb_cfg.get("max_pieces", 7)
+        or board.castling_rights
+    ):
 
         return None, None
 
@@ -653,17 +701,21 @@ def get_online_egtb_move(li, board, game, online_egtb_cfg):
 
     try:
         if source == "lichess":
-            name_to_wld = {"loss": -2,
-                           "maybe-loss": -1,
-                           "blessed-loss": -1,
-                           "draw": 0,
-                           "cursed-win": 1,
-                           "maybe-win": 1,
-                           "win": 2}
+            name_to_wld = {
+                "loss": -2,
+                "maybe-loss": -1,
+                "blessed-loss": -1,
+                "draw": 0,
+                "cursed-win": 1,
+                "maybe-win": 1,
+                "win": 2,
+            }
             max_pieces = 7 if board.uci_variant == "chess" else 6
             if pieces <= max_pieces:
-                data = li.online_book_get(f"http://tablebase.lichess.ovh/{variant}",
-                                          params={"fen": board.fen()})
+                data = li.online_book_get(
+                    f"http://tablebase.lichess.ovh/{variant}",
+                    params={"fen": board.fen()},
+                )
                 if quality == "best":
                     move = data["moves"][0]["uci"]
                     wdl = name_to_wld[data["moves"][0]["category"]] * -1
@@ -676,6 +728,7 @@ def get_online_egtb_move(li, board, game, online_egtb_cfg):
 
                     def good_enough(possible_move):
                         return name_to_wld[possible_move["category"]] == best_wdl
+
                     possible_moves = list(filter(good_enough, data["moves"]))
                     random_move = random.choice(possible_moves)
                     move = random_move["uci"]
@@ -685,7 +738,9 @@ def get_online_egtb_move(li, board, game, online_egtb_cfg):
                     if dtm:
                         dtm *= -1
 
-                logger.info(f"Got move {move} from tablebase.lichess.ovh (wdl: {wdl}, dtz: {dtz}, dtm: {dtm})")
+                logger.info(
+                    f"Got move {move} from tablebase.lichess.ovh (wdl: {wdl}, dtz: {dtz}, dtm: {dtm})"
+                )
                 return move, wdl
         elif source == "chessdb":
 
@@ -714,8 +769,10 @@ def get_online_egtb_move(li, board, game, online_egtb_cfg):
                     return 30000 - score
 
             action = "querypv" if quality == "best" else "queryall"
-            data = li.online_book_get("https://www.chessdb.cn/cdb.php",
-                                      params={"action": action, "board": board.fen(), "json": 1})
+            data = li.online_book_get(
+                "https://www.chessdb.cn/cdb.php",
+                params={"action": action, "board": board.fen(), "json": 1},
+            )
             if data["status"] == "ok":
                 if quality == "best":
                     score = data["score"]
@@ -725,6 +782,7 @@ def get_online_egtb_move(li, board, game, online_egtb_cfg):
 
                     def good_enough(move):
                         return score_to_wdl(move["score"]) == best_wdl
+
                     possible_moves = filter(good_enough, data["moves"])
                     random_move = random.choice(list(possible_moves))
                     score = random_move["score"]
@@ -761,25 +819,35 @@ def get_online_move(li, board, game, online_moves_cfg, draw_or_resign_cfg):
     elif out_of_online_opening_book_moves[game.id] < max_out_of_book_moves:
         best_move = get_chessdb_move(li, board, game, chessdb_cfg)
 
-    if best_move is None and out_of_online_opening_book_moves[game.id] < max_out_of_book_moves:
+    if (
+        best_move is None
+        and out_of_online_opening_book_moves[game.id] < max_out_of_book_moves
+    ):
         best_move = get_lichess_cloud_move(li, board, game, lichess_cloud_cfg)
 
     if best_move:
-        return chess.engine.PlayResult(chess.Move.from_uci(best_move),
-                                       None,
-                                       draw_offered=offer_draw,
-                                       resigned=resign)
+        return chess.engine.PlayResult(
+            chess.Move.from_uci(best_move),
+            None,
+            draw_offered=offer_draw,
+            resigned=resign,
+        )
     out_of_online_opening_book_moves[game.id] += 1
     used_opening_books = chessdb_cfg.get("enabled") or lichess_cloud_cfg.get("enabled")
-    if out_of_online_opening_book_moves[game.id] == max_out_of_book_moves and used_opening_books:
+    if (
+        out_of_online_opening_book_moves[game.id] == max_out_of_book_moves
+        and used_opening_books
+    ):
         logger.info("Will stop using online opening books.")
     return chess.engine.PlayResult(None, None)
 
 
 def get_syzygy(board, syzygy_cfg):
-    if (not syzygy_cfg.get("enabled", False)
-            or chess.popcount(board.occupied) > syzygy_cfg.get("max_pieces", 7)
-            or board.uci_variant not in ["chess", "antichess", "atomic"]):
+    if (
+        not syzygy_cfg.get("enabled", False)
+        or chess.popcount(board.occupied) > syzygy_cfg.get("max_pieces", 7)
+        or board.uci_variant not in ["chess", "antichess", "atomic"]
+    ):
         return None, None
     move_quality = syzygy_cfg.get("move_quality", "best")
     with chess.syzygy.open_tablebase(syzygy_cfg["paths"][0]) as tablebase:
@@ -807,16 +875,24 @@ def get_syzygy(board, syzygy_cfg):
                     return 1
 
             best_wdl = max(map(dtz_to_wdl, moves.values()))
-            good_moves = [(move, dtz) for move, dtz in moves.items() if dtz_to_wdl(dtz) == best_wdl]
+            good_moves = [
+                (move, dtz)
+                for move, dtz in moves.items()
+                if dtz_to_wdl(dtz) == best_wdl
+            ]
             if move_quality == "good":
                 move, dtz = random.choice(good_moves)
-                logger.info(f"Got move {move.uci()} from syzygy (wdl: {best_wdl}, dtz: {dtz})")
+                logger.info(
+                    f"Got move {move.uci()} from syzygy (wdl: {best_wdl}, dtz: {dtz})"
+                )
                 return move, best_wdl
             else:
                 best_dtz = min([dtz for move, dtz in good_moves])
                 best_moves = [move for move, dtz in good_moves if dtz == best_dtz]
                 move = random.choice(best_moves)
-                logger.info(f"Got move {move.uci()} from syzygy (wdl: {best_wdl}, dtz: {best_dtz})")
+                logger.info(
+                    f"Got move {move.uci()} from syzygy (wdl: {best_wdl}, dtz: {best_dtz})"
+                )
                 return move, best_wdl
         except KeyError:
             # Attempt to only get the WDL score. It returns a move of quality="good", even if quality is set to "best".
@@ -830,7 +906,9 @@ def get_syzygy(board, syzygy_cfg):
                 good_moves = [move for move, wdl in moves.items() if wdl == best_wdl]
                 move = random.choice(good_moves)
                 if move_quality == "best":
-                    logger.debug("Found a move using 'move_quality'='good'. We didn't find an '.rtbz' file for this endgame.")
+                    logger.debug(
+                        "Found a move using 'move_quality'='good'. We didn't find an '.rtbz' file for this endgame."
+                    )
                 logger.info(f"Got move {move.uci()} from syzygy (wdl: {best_wdl})")
                 return move, best_wdl
             except KeyError:
@@ -838,9 +916,11 @@ def get_syzygy(board, syzygy_cfg):
 
 
 def get_gaviota(board, gaviota_cfg):
-    if (not gaviota_cfg.get("enabled", False)
-            or chess.popcount(board.occupied) > gaviota_cfg.get("max_pieces", 5)
-            or board.uci_variant != "chess"):
+    if (
+        not gaviota_cfg.get("enabled", False)
+        or chess.popcount(board.occupied) > gaviota_cfg.get("max_pieces", 5)
+        or board.uci_variant != "chess"
+    ):
         return None, None
     move_quality = gaviota_cfg.get("move_quality", "best")
     # Since gaviota TBs use dtm and not dtz, we have to put a limit where after it the position are considered to have
@@ -871,7 +951,11 @@ def get_gaviota(board, gaviota_cfg):
                     return 1
 
             best_wdl = max(map(dtm_to_gaviota_wdl, moves.values()))
-            good_moves = [(move, dtm) for move, dtm in moves.items() if dtm_to_gaviota_wdl(dtm) == best_wdl]
+            good_moves = [
+                (move, dtm)
+                for move, dtm in moves.items()
+                if dtm_to_gaviota_wdl(dtm) == best_wdl
+            ]
             best_dtm = min([dtm for move, dtm in good_moves])
 
             def dtm_to_wdl(dtm):
@@ -899,22 +983,36 @@ def get_gaviota(board, gaviota_cfg):
                     # If a move had wdl=2 and dtz=98, but halfmove_clock is 4 then the real wdl=1 and dtz=102, so we
                     # want to avoid these positions, if there is a move where even when we add the halfmove_clock the
                     # dtz is still <100.
-                    best_moves = [(move, dtm) for move, dtm in good_moves if dtm < min_dtm_to_consider_as_wdl_1]
+                    best_moves = [
+                        (move, dtm)
+                        for move, dtm in good_moves
+                        if dtm < min_dtm_to_consider_as_wdl_1
+                    ]
                 elif best_dtm <= -min_dtm_to_consider_as_wdl_1:
                     # If a move had wdl=-2 and dtz=-98, but halfmove_clock is 4 then the real wdl=-1 and dtz=-102, so we
                     # want to only choose between the moves where the real wdl=-1.
-                    best_moves = [(move, dtm) for move, dtm in good_moves if dtm <= -min_dtm_to_consider_as_wdl_1]
+                    best_moves = [
+                        (move, dtm)
+                        for move, dtm in good_moves
+                        if dtm <= -min_dtm_to_consider_as_wdl_1
+                    ]
                 elif best_dtm <= -100:
                     # If a move had wdl=-2 and dtz=-98, but halfmove_clock is 4 then the real wdl=-1 and dtz=-102, so we
                     # want to only choose between the moves where the real wdl=-1.
-                    best_moves = [(move, dtm) for move, dtm in good_moves if dtm <= -100]
+                    best_moves = [
+                        (move, dtm) for move, dtm in good_moves if dtm <= -100
+                    ]
                 else:
                     best_moves = good_moves
             else:
                 # There can be multiple moves with the same dtm.
-                best_moves = [(move, dtm) for move, dtm in good_moves if dtm == best_dtm]
+                best_moves = [
+                    (move, dtm) for move, dtm in good_moves if dtm == best_dtm
+                ]
             move, dtm = random.choice(best_moves)
-            logger.info(f"Got move {move.uci()} from gaviota (pseudo wdl: {pseudo_wdl}, dtm: {dtm})")
+            logger.info(
+                f"Got move {move.uci()} from gaviota (pseudo wdl: {pseudo_wdl}, dtm: {dtm})"
+            )
             return move, pseudo_wdl
         except KeyError:
             return None, None
@@ -932,7 +1030,9 @@ def get_egtb_move(board, lichess_bot_tbs, draw_or_resign_cfg):
         can_resign = draw_or_resign_cfg.get("resign_enabled", False)
         resign_on_egtb_loss = draw_or_resign_cfg.get("resign_for_egtb_minus_two", True)
         resign = bool(can_resign and resign_on_egtb_loss and wdl == -2)
-        return chess.engine.PlayResult(best_move, None, draw_offered=offer_draw, resigned=resign)
+        return chess.engine.PlayResult(
+            best_move, None, draw_offered=offer_draw, resigned=resign
+        )
     return chess.engine.PlayResult(None, None)
 
 
@@ -942,13 +1042,15 @@ def choose_move(engine, board, game, ponder, draw_offered, start_time, move_over
     wb = "w" if board.turn == chess.WHITE else "b"
     game.state[f"{wb}time"] = max(0, game.state[f"{wb}time"] - overhead)
     logger.info("Searching for wtime {wtime} btime {btime}".format_map(game.state))
-    return engine.search_with_ponder(board,
-                                     game.state["wtime"],
-                                     game.state["btime"],
-                                     game.state["winc"],
-                                     game.state["binc"],
-                                     ponder,
-                                     draw_offered)
+    return engine.search_with_ponder(
+        board,
+        game.state["wtime"],
+        game.state["btime"],
+        game.state["winc"],
+        game.state["binc"],
+        ponder,
+        draw_offered,
+    )
 
 
 def check_for_draw_offer(game):
@@ -987,7 +1089,9 @@ def setup_board(game):
 
 
 def is_engine_move(game, prior_game, board):
-    return game_changed(game, prior_game) and game.is_white == (board.turn == chess.WHITE)
+    return game_changed(game, prior_game) and game.is_white == (
+        board.turn == chess.WHITE
+    )
 
 
 def is_game_over(game):
@@ -1015,10 +1119,12 @@ def tell_user_game_result(game, board):
     else:
         logger.info("Game adjourned.")
 
-    simple_endings = {engine_wrapper.Termination.MATE: "Game won by checkmate.",
-                      engine_wrapper.Termination.TIMEOUT: f"{losing_name} forfeited on time.",
-                      engine_wrapper.Termination.RESIGN: f"{losing_name} resigned.",
-                      engine_wrapper.Termination.ABORT: "Game aborted."}
+    simple_endings = {
+        engine_wrapper.Termination.MATE: "Game won by checkmate.",
+        engine_wrapper.Termination.TIMEOUT: f"{losing_name} forfeited on time.",
+        engine_wrapper.Termination.RESIGN: f"{losing_name} resigned.",
+        engine_wrapper.Termination.ABORT: "Game aborted.",
+    }
 
     if termination in simple_endings:
         logger.info(simple_endings[termination])
@@ -1068,7 +1174,9 @@ def print_pgn_game_record(li, config, game, board, engine):
             lichess_node = lichess_node.next()
             current_node.set_clock(lichess_node.clock())
             if current_node.comment != lichess_node.comment:
-                current_node.comment = f"{current_node.comment} {lichess_node.comment}".strip()
+                current_node.comment = (
+                    f"{current_node.comment} {lichess_node.comment}".strip()
+                )
 
         commentary = engine.comment_for_board_index(index) or {}
         pv_node = current_node.parent.add_line(commentary.get("pv", []))
@@ -1080,7 +1188,7 @@ def print_pgn_game_record(li, config, game, board, engine):
 
 
 def intro():
-    return fr"""
+    return rf"""
     .   _/|
     .  // o\
     .  || ._)  lichess-bot {__version__}
@@ -1091,10 +1199,20 @@ def intro():
 
 def start_lichess_bot():
     parser = argparse.ArgumentParser(description="Play on Lichess with a bot")
-    parser.add_argument("-u", action="store_true", help="Upgrade your account to a bot account.")
-    parser.add_argument("-v", action="store_true", help="Make output more verbose. Include all communication with lichess.")
-    parser.add_argument("--config", help="Specify a configuration file (defaults to ./config.yml).")
-    parser.add_argument("-l", "--logfile", help="Record all console output to a log file.", default=None)
+    parser.add_argument(
+        "-u", action="store_true", help="Upgrade your account to a bot account."
+    )
+    parser.add_argument(
+        "-v",
+        action="store_true",
+        help="Make output more verbose. Include all communication with lichess.",
+    )
+    parser.add_argument(
+        "--config", help="Specify a configuration file (defaults to ./config.yml)."
+    )
+    parser.add_argument(
+        "-l", "--logfile", help="Record all console output to a log file.", default=None
+    )
     args = parser.parse_args()
 
     logging_level = logging.DEBUG if args.v else logging.INFO
@@ -1114,7 +1232,9 @@ def start_lichess_bot():
     if is_bot:
         start(li, user_profile, CONFIG, logging_level, args.logfile)
     else:
-        logger.error(f"{username} is not a bot account. Please upgrade it to a bot account!")
+        logger.error(
+            f"{username} is not a bot account. Please upgrade it to a bot account!"
+        )
 
 
 if __name__ == "__main__":
